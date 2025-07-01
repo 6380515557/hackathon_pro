@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware # Import CORS
 from .database import connect_to_mongo, close_mongo_connection
 from .auth.router import router as auth_router
 from .production_data.router import router as production_data_router # Import production data routes
-
+#hello
 app = FastAPI(
     title="Production Data Management API",
     description="API for digitalizing production data entry in factories.",
