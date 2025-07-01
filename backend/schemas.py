@@ -116,3 +116,28 @@ class ProductionDataFilter(BaseModel):
     model_config = ConfigDict(
         #json_encoders={ObjectId: str}
     )
+
+# backend/schemas.py
+
+# ... (your existing imports, including from datetime import date, datetime, timezone)
+# ... (your existing PyObjectId, User, ProductionDataCreate, ProductionDataResponse etc.)
+
+# --- NEW SCHEMAS FOR REPORTING & ANALYTICS ---
+
+class DailyProductionSummary(BaseModel):
+    # CHANGE THIS LINE: Rename 'date' field to 'summary_date'
+    summary_date: Annotated[date, Field(..., alias="_id", description="Date of the summary")]
+    totalQuantity: int = Field(..., description="Total quantity produced on this date")
+    numRecords: int = Field(..., description="Number of production records on this date")
+
+    model_config = ConfigDict(populate_by_name=True) # Allows mapping '_id' from MongoDB to 'summary_date'
+
+# The MonthlyProductionSummary and MachinePerformanceSummary classes should be fine
+# as their _id aliases ('month', 'machineId') are strings and don't clash with types.
+class MonthlyProductionSummary(BaseModel):
+    month: str = Field(..., alias="_id", description="Month of the summary (YYYY-MM)")
+    # ... rest of fields ...
+
+class MachinePerformanceSummary(BaseModel):
+    machineId: str = Field(..., alias="_id", description="Machine ID")
+    # ... rest of fields ...
