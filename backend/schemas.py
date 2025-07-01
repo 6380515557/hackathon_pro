@@ -70,13 +70,20 @@ class TokenData(BaseModel):
 
 # --- Production Data Schemas ---
 class ProductionDataCreate(BaseModel):
-    # This is a minimal model to test Pydantic's basic functionality
-    name: str = Field(..., example="Test Item")
+    production_date: Annotated[date, Field(..., example="2025-07-01", description="Date of production (YYYY-MM-DD)")]
+    # --- CHANGE THIS LINE ---
+    shift: Annotated[Literal["Morning", "Afternoon", "Night"], Field(..., example="Morning", description="Production shift")]
+    # --- END CHANGE ---
+    machineId: str = Field(..., example="DISA-3", description="ID of the machine used")
+    productName: str = Field(..., example="Gear Casting", description="Name or type of the product produced")
+    quantityProduced: int = Field(..., ge=0, example=150, description="Number of units produced (must be non-negative)")
+    remarks: Optional[str] = Field(None, example="Minor mold defect on 5 units", description="Any additional comments or issues")
 
     model_config = ConfigDict()
 
 
 class ProductionDataResponse(ProductionDataCreate):
+    """Schema for returning production data, including ID and backend-generated fields."""
     id: PyObjectId = Field(alias="_id")
     operatorName: str = Field(..., example="Ravi Kumar", description="Name of the operator who entered the data")
     createdAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timestamp of when the record was created (UTC)")
