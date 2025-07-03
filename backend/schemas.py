@@ -1,14 +1,15 @@
 # backend/schemas.py
 
 from datetime import datetime, date, timedelta, timezone
-from typing import List, Optional, Any, Annotated
+from typing import List, Optional, Any, Annotated, Dict
 from pydantic import BaseModel, Field, ConfigDict, FieldValidationInfo, field_validator
 from bson import ObjectId
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import core_schema
-from typing import List, Optional, Any, Annotated
-# --- Existing PyObjectId and User/Auth Schemas ---
+from enum import Enum
 
+
+# --- MongoDB ObjectId Custom Type ---
 class PyObjectId(ObjectId):
     @classmethod
     def __get_validators__(cls):
@@ -28,20 +29,26 @@ class PyObjectId(ObjectId):
     def __get_pydantic_json_schema__(
         cls, _core_schema: core_schema.CoreSchema, handler: Any
     ) -> JsonSchemaValue:
-        # We tell Pydantic that this custom type should be treated as a string in JSON Schema
         return handler(core_schema.str_schema())
 
+
+# --- User/Auth Schemas ---
 class UserCreate(BaseModel):
-    username: str
-    password: str
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6)
+    email: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+    full_name: Optional[str] = Field(None, max_length=100)
+    # Define roles here, e.g., ["admin", "operator", "viewer"]
+    roles: List[str] = Field(["viewer"], description="List of roles assigned to the user.")
 
 class UserResponse(BaseModel):
     id: PyObjectId = Field(alias="_id", default=None)
     username: str
-    is_active: bool = True
     email: Optional[str] = None
     full_name: Optional[str] = None
     disabled: Optional[bool] = False
+    is_active: bool = True # Added for consistency with FastAPI security
+    roles: List[str] = Field([], description="List of roles assigned to the user.") # Include roles in response
 
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True, json_schema_extra={
         "example": {
@@ -49,8 +56,30 @@ class UserResponse(BaseModel):
             "email": "johndoe@example.com",
             "full_name": "John Doe",
             "disabled": False,
+            "is_active": True,
+            "roles": ["operator"]
         }
     })
+
+class UserUpdate(BaseModel):
+    email: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+    full_name: Optional[str] = Field(None, max_length=100)
+    is_active: Optional[bool] = None
+    disabled: Optional[bool] = None
+    roles: Optional[List[str]] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "email": "new.email@example.com",
+                "full_name": "John D. updated",
+                "is_active": True,
+                "roles": ["admin", "operator"]
+            }
+        },
+        extra="forbid" # Disallow extra fields
+    )
+
 
 class Token(BaseModel):
     access_token: str
@@ -58,8 +87,43 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+    scopes: List[str] = [] # Include scopes for finer-grained permissions
 
-# --- Existing Production Data Schemas ---
+
+# --- Notification Schemas ---
+
+class NotificationSeverity(str, Enum):
+    """Defines the severity levels for notifications."""
+    INFO = "info"
+    WARNING = "warning" # Changed from "Earning" to be more generic for notifications
+    ERROR = "error"     # Changed from "Withdrawal"
+    CRITICAL = "critical" # Changed from "Recharge"
+    
+class NotificationBase(BaseModel):
+    """Base schema for a notification."""
+    user_id: Optional[str] = None # Can be None for global notifications, or specific user ID (MongoDB ObjectId as string)
+    username: Optional[str] = None # Store username for easier access if user_id is ObjectId
+    message: str
+    severity: NotificationSeverity = NotificationSeverity.INFO
+    read: bool = False
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class NotificationCreate(NotificationBase):
+    """Schema for creating a new notification."""
+    # timestamp and read will be defaulted upon creation
+
+class NotificationResponse(NotificationBase):
+    """Schema for returning a notification, including its ID."""
+    id: str = Field(alias="_id", description="MongoDB ObjectId as string.") # Map MongoDB's _id to 'id' for API response
+
+    model_config = ConfigDict(
+        populate_by_name=True, # Allow population by field name or alias
+        arbitrary_types_allowed=True, # Allow ObjectId type from MongoDB
+        json_encoders = {datetime: lambda dt: dt.isoformat()} # For proper datetime serialization
+    )
+
+
+# --- Production Data Schemas ---
 
 class ProductionDataCreate(BaseModel):
     productName: str
@@ -116,10 +180,9 @@ class ProductionDataFilter(BaseModel):
     startDate: Optional[date] = None # Filter by date only
     endDate: Optional[date] = None   # Filter by date only
 
-# --- EXISTING SCHEMAS FOR REPORTING & ANALYTICS ---
+# --- Schemas for Reporting & Analytics ---
 
 class DailyProductionSummary(BaseModel):
-    # Modified from previous steps for robust date handling
     summary_date: date = Field(..., alias="_id", description="Date of the summary (YYYY-MM-DD)")
     totalQuantity: int = Field(..., description="Total quantity produced on this date")
     numRecords: int = Field(..., description="Number of production records on this date")
@@ -152,7 +215,7 @@ class MachinePerformanceSummary(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-# --- NEW SCHEMAS FOR DASHBOARD SPECIFIC APIs ---
+# --- Schemas for Dashboard Specific APIs ---
 
 class ProductionOverviewSummary(BaseModel):
     """Provides a high-level summary of total production over a period."""
@@ -193,3 +256,39 @@ class OperatorProductionSummary(BaseModel):
             "numRecords": 60
         }
     })
+
+
+# --- Corrected Reference Data Schemas ---
+
+class ReferenceDataItem(BaseModel):
+    """
+    Schema for a single item within a reference data category.
+    This allows for flexible key-value pairs or more complex data.
+    """
+    key: str = Field(..., min_length=1, description="Unique identifier for the reference data item within its category (e.g., 'active', 'completed').")
+    value: str = Field(..., min_length=1, description="Display value for the reference data item (e.g., 'Active', 'Completed').")
+    description: Optional[str] = Field(None, description="Optional description of the reference data item.")
+    
+    model_config = ConfigDict(extra="allow") 
+
+
+class ReferenceDataCategoryCreate(BaseModel):
+    """
+    Schema for creating a new reference data category.
+    A category holds a list of ReferenceDataItem.
+    """
+    category_name: str = Field(..., min_length=1, description="Unique name for the reference data category (e.g., 'MachineType', 'ProductStatus', 'ShiftDefinitions').")
+    description: Optional[str] = Field(None, description="Optional description for the category.")
+    items: List[ReferenceDataItem] = Field(default_factory=list, description="List of items within this reference data category.")
+
+class ReferenceDataCategoryResponse(ReferenceDataCategoryCreate):
+    """
+    Schema for returning a reference data category, including its ID.
+    """
+    id: str = Field(alias="_id", description="MongoDB ObjectId as string.")
+
+    model_config = ConfigDict(
+        populate_by_name=True, # Allow population by field name or alias
+        arbitrary_types_allowed=True, # Allow ObjectId type from MongoDB
+        json_encoders = {datetime: lambda dt: dt.isoformat()} # For proper datetime serialization
+    )

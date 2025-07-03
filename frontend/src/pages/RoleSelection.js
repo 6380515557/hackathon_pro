@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import "./RoleSelect.css";
+import "./RoleSelection.css";
 
 const RoleSelect = () => {
   const navigate = useNavigate();
