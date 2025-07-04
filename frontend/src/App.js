@@ -1,13 +1,8 @@
-import React, { useState } from 'react';
-import { CheckCircle, XCircle, Loader2 } from 'lucide-react'; // Using lucide-react for icons
-
-// Simple Message Modal Component (reused from Login and ProductionEntry)
-const MessageModal = ({ message, type, onClose }) => {
-  const isSuccess = type === 'success';
-  const icon = isSuccess ? <CheckCircle className="w-8 h-8 text-green-500" /> : <XCircle className="w-8 h-8 text-red-500" />;
-  const title = isSuccess ? 'Success!' : 'Error!';
-  const bgColor = isSuccess ? 'bg-green-100' : 'bg-red-100';
-  const textColor = isSuccess ? 'text-green-800' : 'text-red-800';
+import React from "react";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import RoleSelect from "./pages/RoleSelection";
+import Login from "./pages/Login";
+import ProductionEntry from "./pages/ProductionEntry"; // ✅ updated component name
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50">

@@ -1,75 +1,84 @@
 # backend/routers/production_data.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from typing import List, Optional, Any
-from motor.motor_asyncio import AsyncIOMotorClient
-from datetime import datetime, date, timedelta, timezone
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from motor.motor_asyncio import AsyncIOMotorCollection
+from bson import ObjectId
+from typing import List, Optional
+from datetime import datetime, date, timedelta, timezone # Import timezone here
 
-from ..database import get_database
+# Import schemas
 from ..schemas import (
-    ProductionDataCreate, ProductionDataResponse, ProductionDataUpdate, ProductionDataFilter,
-    DailyProductionSummary, MonthlyProductionSummary, MachinePerformanceSummary,
-    ProductionOverviewSummary, ProductProductionSummary, OperatorProductionSummary # NEW IMPORTS
+    ProductionDataCreate,
+    ProductionDataResponse,
+    ProductionDataUpdate,
+    ProductionDataFilter,
+    UserResponse,
+    DailyProductionSummary,
+    MonthlyProductionSummary,
+    MachinePerformanceSummary,
+    ProductionOverviewSummary,
+    ProductProductionSummary,
+    OperatorProductionSummary
 )
-from ..auth.oauth2 import get_current_active_user # Ensure this import is correct
+
+# Import database collection and security dependencies
+# CORRECTED IMPORT: Remove get_database and directly import production_data_collection
+from ..database import production_data_collection
+from ..auth.security import get_current_active_user, role_required
 
 router = APIRouter(
-    prefix="/production",
-    tags=["Production Data & Analytics"],
-    responses={404: {"description": "Not found"}},
+    prefix="/production_data",
+    tags=["Production Data"],
 )
 
-# Helper function for date filtering in pipelines
-def _get_date_match_stage(start_date: Optional[date], end_date: Optional[date]) -> dict:
-    date_match = {}
-    if start_date:
-        # Convert date to datetime at start of day (UTC)
-        date_match["$gte"] = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
-    if end_date:
-        # Convert date to datetime at end of day (UTC)
-        date_match["$lte"] = datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc)
+# Dependency to get the production data collection
+async def get_production_data_collection() -> AsyncIOMotorCollection:
+    """Dependency function to provide the production data collection."""
+    # This now directly returns the imported collection
+    return production_data_collection
 
-    if date_match:
-        return {"$match": {"production_date": date_match}}
-    return {}
+# --- CRUD Operations for Production Data ---
 
-# --- CRUD Operations (Existing or Placeholder) ---
-
-@router.post("/", response_model=ProductionDataResponse, status_code=status.HTTP_201_CREATED,
-             summary="Create Production Record", description="Adds a new production data record.")
-async def create_production_data(
-    production_data: ProductionDataCreate,
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user)
+@router.post("/", response_model=ProductionDataResponse, status_code=status.HTTP_201_CREATED)
+async def create_production_record(
+    record_in: ProductionDataCreate,
+    current_user: UserResponse = Depends(role_required(["admin", "operator"])), # Admins or Operators can create
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    # Ensure production_date is stored in UTC
-    if production_data.production_date.tzinfo is None:
-        production_data.production_date = production_data.production_date.replace(tzinfo=timezone.utc)
-    new_record = await collection.insert_one(production_data.model_dump(by_name=True))
-    created_record = await collection.find_one({"_id": new_record.inserted_id})
-    return created_record
+    """
+    Creates a new production data record.
+    Requires 'admin' or 'operator' role.
+    """
+    record_data = record_in.model_dump(by_alias=True, exclude_unset=True)
+    result = await collection.insert_one(record_data)
+    created_record = await collection.find_one({"_id": result.inserted_id})
 
-@router.get("/", response_model=List[ProductionDataResponse],
-            summary="Get All Production Records (with filters)",
-            description="Retrieves all production records, with optional filtering by various criteria and date range.")
-async def get_all_production_data(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    productName: Optional[str] = Query(None, description="Filter by product name"),
-    machineId: Optional[str] = Query(None, description="Filter by machine ID"),
-    operatorId: Optional[str] = Query(None, description="Filter by operator ID"),
-    shift: Optional[str] = Query(None, description="Filter by shift (e.g., Day, Night)"),
-    minQuantity: Optional[int] = Query(None, description="Minimum quantity produced"),
-    maxQuantity: Optional[int] = Query(None, description="Maximum quantity produced"),
-    startDate: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    endDate: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive."),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    skip: int = Query(0, ge=0, description="Number of records to skip for pagination")
+    if created_record:
+        return ProductionDataResponse(**created_record)
+    raise HTTPException(status_code=500, detail="Failed to create production record.")
+
+
+@router.get("/", response_model=List[ProductionDataResponse])
+async def get_all_production_records(
+    current_user: UserResponse = Depends(get_current_active_user), # All active users can read
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
+    skip: int = Query(0, description="Number of records to skip for pagination"),
+    limit: int = Query(100, description="Maximum number of records to return for pagination"),
+    # Filtering parameters
+    productName: Optional[str] = None,
+    machineId: Optional[str] = None,
+    operatorId: Optional[str] = None,
+    shift: Optional[str] = None,
+    minQuantity: Optional[int] = None,
+    maxQuantity: Optional[int] = None,
+    startDate: Optional[date] = None,
+    endDate: Optional[date] = None,
 ):
-    collection = db["production_data"]
+    """
+    Retrieves all production data records with optional filtering and pagination.
+    Accessible to all authenticated active users.
+    """
     query = {}
-
     if productName:
         query["productName"] = productName
     if machineId:
@@ -80,313 +89,302 @@ async def get_all_production_data(
         query["shift"] = shift
 
     if minQuantity is not None or maxQuantity is not None:
-        query["quantityProduced"] = {}
+        quantity_query = {}
         if minQuantity is not None:
-            query["quantityProduced"]["$gte"] = minQuantity
+            quantity_query["$gte"] = minQuantity
         if maxQuantity is not None:
-            query["quantityProduced"]["$lte"] = maxQuantity
+            quantity_query["$lte"] = maxQuantity
+        query["quantityProduced"] = quantity_query
 
     if startDate is not None or endDate is not None:
-        query["production_date"] = {}
-        if startDate:
-            query["production_date"]["$gte"] = datetime.combine(startDate, datetime.min.time(), tzinfo=timezone.utc)
-        if endDate:
-            query["production_date"]["$lte"] = datetime.combine(endDate, datetime.max.time(), tzinfo=timezone.utc)
+        date_query = {}
+        if startDate is not None:
+            # For date range, consider the start of the day in UTC
+            date_query["$gte"] = datetime.combine(startDate, datetime.min.time(), tzinfo=timezone.utc)
+        if endDate is not None:
+            # For date range, consider the end of the day in UTC
+            date_query["$lte"] = datetime.combine(endDate + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        query["production_date"] = date_query
 
-    # Sort by production_date in descending order for most recent first
-    records = await collection.find(query).sort("production_date", -1).skip(skip).limit(limit).to_list(None)
-    return records
+    records_cursor = collection.find(query).skip(skip).limit(limit).sort("production_date", -1) # Sort by date descending
+    all_records = await records_cursor.to_list(length=None)
 
-@router.get("/{record_id}", response_model=ProductionDataResponse,
-            summary="Get Production Record by ID", description="Retrieves a single production record by its unique ID.")
-async def get_production_data_by_id(
+    return [ProductionDataResponse(**record) for record in all_records]
+
+
+@router.get("/{record_id}", response_model=ProductionDataResponse)
+async def get_production_record_by_id(
     record_id: str,
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    if not isinstance(record_id, str) or not record_id:
-        raise HTTPException(status_code=400, detail="Invalid record ID format.")
-    try:
-        obj_id = ObjectId(record_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
+    """
+    Retrieves a single production record by its ID.
+    Accessible to all authenticated active users.
+    """
+    if not ObjectId.is_valid(record_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid record ID format.")
 
-    record = await collection.find_one({"_id": obj_id})
-    if record:
-        return record
-    raise HTTPException(status_code=404, detail="Production record not found")
+    record = await collection.find_one({"_id": ObjectId(record_id)})
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Production record with ID '{record_id}' not found."
+        )
+    return ProductionDataResponse(**record)
 
-@router.put("/{record_id}", response_model=ProductionDataResponse,
-            summary="Update Production Record", description="Updates an existing production data record by its ID.")
-async def update_production_data(
+
+@router.put("/{record_id}", response_model=ProductionDataResponse)
+async def update_production_record(
     record_id: str,
-    production_data_update: ProductionDataUpdate,
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user)
+    record_update: ProductionDataUpdate,
+    current_user: UserResponse = Depends(role_required(["admin", "operator"])), # Admins or Operators can update
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    try:
-        obj_id = ObjectId(record_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
+    """
+    Updates an existing production data record by its ID.
+    Requires 'admin' or 'operator' role.
+    """
+    if not ObjectId.is_valid(record_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid record ID format.")
 
-    update_data = {k: v for k, v in production_data_update.model_dump(by_name=True).items() if v is not None}
+    update_data = record_update.model_dump(by_alias=True, exclude_unset=True)
     if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields provided for update.")
 
-    # If production_date is updated, ensure it's stored in UTC
-    if "production_date" in update_data and update_data["production_date"].tzinfo is None:
-        update_data["production_date"] = update_data["production_date"].replace(tzinfo=timezone.utc)
+    update_result = await collection.update_one(
+        {"_id": ObjectId(record_id)},
+        {"$set": update_data}
+    )
 
-    result = await collection.update_one({"_id": obj_id}, {"$set": update_data})
-    if result.modified_count == 1:
-        updated_record = await collection.find_one({"_id": obj_id})
-        return updated_record
-    raise HTTPException(status_code=404, detail="Production record not found or no changes made")
+    if update_result.modified_count == 0:
+        # Check if record exists but no changes were made (data was identical)
+        if await collection.find_one({"_id": ObjectId(record_id)}):
+            # Record found, but no modification. Return its current state.
+            updated_record = await collection.find_one({"_id": ObjectId(record_id)})
+            return ProductionDataResponse(**updated_record)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Production record with ID '{record_id}' not found.")
 
-@router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT,
-               summary="Delete Production Record", description="Deletes a production data record by its ID.")
-async def delete_production_data(
+    updated_record = await collection.find_one({"_id": ObjectId(record_id)})
+    if updated_record:
+        return ProductionDataResponse(**updated_record)
+    raise HTTPException(status_code=500, detail="Production record updated but could not be retrieved.")
+
+
+@router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_production_record(
     record_id: str,
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: UserResponse = Depends(role_required(["admin"])), # Only Admins can delete
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    try:
-        obj_id = ObjectId(record_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
+    """
+    Deletes a production data record by its ID.
+    Requires 'admin' role.
+    """
+    if not ObjectId.is_valid(record_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid record ID format.")
 
-    result = await collection.delete_one({"_id": obj_id})
-    if result.deleted_count == 1:
-        return
-    raise HTTPException(status_code=404, detail="Production record not found")
+    delete_result = await collection.delete_one({"_id": ObjectId(record_id)})
 
-# --- Analytics & Reporting Endpoints (Existing) ---
+    if delete_result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Production record with ID '{record_id}' not found."
+        )
+    return # 204 No Content response
 
-@router.get(
-    "/summary/daily",
-    response_model=List[DailyProductionSummary],
-    summary="Get Daily Production Summary",
-    description="Aggregates production data to provide daily summaries of quantity and record count within an optional date range."
-)
+# --- Aggregation and Reporting Endpoints (for Dashboards) ---
+
+@router.get("/reports/daily_summary", response_model=List[DailyProductionSummary])
 async def get_daily_production_summary(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
+    start_date: Optional[date] = Query(None, description="Start date for summary (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="End date for summary (YYYY-MM-DD)"),
 ):
-    collection = db["production_data"]
+    """
+    Generates a daily production summary (total quantity and record count per day).
+    Optionally filter by date range.
+    Accessible to all authenticated active users.
+    """
     pipeline = []
+    match_stage = {}
 
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            date_filter["$gte"] = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        if end_date:
+            date_filter["$lt"] = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        match_stage["production_date"] = date_filter
+    
+    if match_stage:
+        pipeline.append({"$match": match_stage})
 
-    pipeline.append({
-        "$group": {
-            "_id": {
-                "$dateToString": {
-                    "format": "%Y-%m-%d",
-                    "date": "$production_date"
-                }
-            },
-            "totalQuantity": {"$sum": "$quantityProduced"},
-            "numRecords": {"$sum": 1}
-        }
-    })
-    pipeline.append({"$sort": {"_id": 1}}) # Sort by date
+    pipeline.extend([
+        {
+            "$group": {
+                "_id": { "$dateToString": { "format": "%Y-%m-%d", "date": "$production_date" } },
+                "totalQuantity": { "$sum": "$quantityProduced" },
+                "numRecords": { "$sum": 1 }
+            }
+        },
+        { "$sort": { "_id": 1 } } # Sort by date ascending
+    ])
 
-    result = await collection.aggregate(pipeline).to_list(None)
-    return result
+    summary_cursor = collection.aggregate(pipeline)
+    summary_list = await summary_cursor.to_list(length=None)
+    return [DailyProductionSummary(**item) for item in summary_list]
 
-@router.get(
-    "/summary/monthly",
-    response_model=List[MonthlyProductionSummary],
-    summary="Get Monthly Production Summary",
-    description="Aggregates production data to provide monthly summaries of quantity and record count within an optional date range."
-)
+
+@router.get("/reports/monthly_summary", response_model=List[MonthlyProductionSummary])
 async def get_monthly_production_summary(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
+    year: Optional[int] = Query(None, description="Filter by year"),
 ):
-    collection = db["production_data"]
+    """
+    Generates a monthly production summary (total quantity and record count per month).
+    Optionally filter by year.
+    Accessible to all authenticated active users.
+    """
     pipeline = []
-
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
-
-    pipeline.append({
-        "$group": {
-            "_id": {
-                "year": {"$year": "$production_date"},
-                "month": {"$month": "$production_date"}
-            },
-            "totalQuantity": {"$sum": "$quantityProduced"},
-            "numRecords": {"$sum": 1}
+    match_stage = {}
+    
+    if year:
+        match_stage["production_date"] = {
+            "$gte": datetime(year, 1, 1, tzinfo=timezone.utc),
+            "$lt": datetime(year + 1, 1, 1, tzinfo=timezone.utc)
         }
-    })
-    pipeline.append({
-        "$project": {
-            "_id": 0, # Exclude the default _id
-            "year_month": { # Format year and month as YYYY-MM string
-                "$concat": [
-                    {"$toString": "$_id.year"},
-                    "-",
-                    {"$cond": { # Add leading zero for single-digit months
-                        "if": {"$lt": ["$_id.month", 10]},
-                        "then": {"$concat": ["0", {"$toString": "$_id.month"}]},
-                        "else": {"$toString": "$_id.month"}
-                    }}
-                ]
-            },
-            "totalQuantity": 1,
-            "numRecords": 1
-        }
-    })
-    pipeline.append({"$sort": {"year_month": 1}})
+    
+    if match_stage:
+        pipeline.append({"$match": match_stage})
 
-    result = await collection.aggregate(pipeline).to_list(None)
-    return result
+    pipeline.extend([
+        {
+            "$group": {
+                "_id": { "$dateToString": { "format": "%Y-%m", "date": "$production_date" } },
+                "totalQuantity": { "$sum": "$quantityProduced" },
+                "numRecords": { "$sum": 1 }
+            }
+        },
+        { "$sort": { "_id": 1 } } # Sort by year-month ascending
+    ])
 
-@router.get(
-    "/summary/machine_performance",
-    response_model=List[MachinePerformanceSummary],
-    summary="Get Machine Performance Summary",
-    description="Aggregates production data to provide performance metrics per machine, including total quantity, average quantity per record, and average time taken, within an optional date range."
-)
+    summary_cursor = collection.aggregate(pipeline)
+    summary_list = await summary_cursor.to_list(length=None)
+    return [MonthlyProductionSummary(**item) for item in summary_list]
+
+
+@router.get("/reports/machine_performance", response_model=List[MachinePerformanceSummary])
 async def get_machine_performance_summary(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
+    machine_id: Optional[str] = Query(None, description="Filter by a specific machine ID")
 ):
-    collection = db["production_data"]
+    """
+    Generates a summary of production performance per machine.
+    Accessible to all authenticated active users.
+    """
     pipeline = []
+    if machine_id:
+        pipeline.append({"$match": {"machineId": machine_id}})
 
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
+    pipeline.extend([
+        {
+            "$group": {
+                "_id": "$machineId",
+                "totalQuantity": { "$sum": "$quantityProduced" },
+                "numRecords": { "$sum": 1 },
+                "avgTimeTakenMinutes": { "$avg": "$timeTakenMinutes" } # Avg of a nullable field is fine
+            }
+        },
+        {
+            "$project": {
+                "_id": 1,
+                "totalQuantity": 1,
+                "numRecords": 1,
+                "avgTimeTakenMinutes": 1,
+                "avgQuantityPerRecord": { "$cond": [{ "$ne": ["$numRecords", 0] }, { "$divide": ["$totalQuantity", "$numRecords"] }, 0] }
+            }
+        },
+        { "$sort": { "totalQuantity": -1 } } # Sort by total quantity descending
+    ])
 
-    pipeline.append({
-        "$group": {
-            "_id": "$machineId",
-            "totalQuantity": {"$sum": "$quantityProduced"},
-            "avgQuantityPerRecord": {"$avg": "$quantityProduced"},
-            "avgTimeTakenMinutes": {"$avg": "$timeTakenMinutes"}, # Will be null if timeTakenMinutes is always null
-            "numRecords": {"$sum": 1}
-        }
-    })
-    pipeline.append({"$sort": {"_id": 1}}) # Sort by machineId
+    summary_cursor = collection.aggregate(pipeline)
+    summary_list = await summary_cursor.to_list(length=None)
+    return [MachinePerformanceSummary(**item) for item in summary_list]
 
-    result = await collection.aggregate(pipeline).to_list(None)
-    return result
 
-# --- NEW Dashboard Specific APIs ---
-
-@router.get(
-    "/dashboard/overview",
-    response_model=ProductionOverviewSummary,
-    summary="Get Overall Production Overview",
-    description="Provides total quantity and total number of records for the entire dataset or within a specified date range, for dashboard display."
-)
-async def get_overall_production_overview(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+@router.get("/dashboard/overview", response_model=ProductionOverviewSummary)
+async def get_production_overview(
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    pipeline = []
+    """
+    Provides a high-level overview of total production quantity and record count.
+    Accessible to all authenticated active users.
+    """
+    pipeline = [
+        {
+            "$group": {
+                "_id": None, # Group all documents
+                "totalQuantityOverall": { "$sum": "$quantityProduced" },
+                "totalRecordsOverall": { "$sum": 1 }
+            }
+        },
+        { "$project": { "_id": 0, "totalQuantityOverall": 1, "totalRecordsOverall": 1 } }
+    ]
+    
+    result = await collection.aggregate(pipeline).to_list(length=1)
+    if result:
+        return ProductionOverviewSummary(**result[0])
+    return ProductionOverviewSummary(totalQuantityOverall=0, totalRecordsOverall=0)
 
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
 
-    pipeline.append({
-        "$group": {
-            "_id": None, # Group all documents into a single group
-            "totalQuantityOverall": {"$sum": "$quantityProduced"},
-            "totalRecordsOverall": {"$sum": 1}
-        }
-    })
-    pipeline.append({
-        "$project": {
-            "_id": 0, # Exclude the default _id from the response
-            "totalQuantityOverall": 1,
-            "totalRecordsOverall": 1
-        }
-    })
-
-    result = await collection.aggregate(pipeline).to_list(None)
-
-    if not result:
-        # Return a default summary if no data matches the criteria
-        return ProductionOverviewSummary(totalQuantityOverall=0, totalRecordsOverall=0)
-    return result[0] # There will only be one document in the result list
-
-@router.get(
-    "/dashboard/by_product",
-    response_model=List[ProductProductionSummary],
-    summary="Get Production Summary by Product",
-    description="Aggregates production data to provide total quantity and record count for each product within an optional date range, ideal for product performance dashboards."
-)
-async def get_production_by_product(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+@router.get("/dashboard/product_summary", response_model=List[ProductProductionSummary])
+async def get_product_production_summary(
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    pipeline = []
+    """
+    Aggregates production quantity and records per product.
+    Accessible to all authenticated active users.
+    """
+    pipeline = [
+        {
+            "$group": {
+                "_id": "$productName",
+                "totalQuantity": { "$sum": "$quantityProduced" },
+                "numRecords": { "$sum": 1 }
+            }
+        },
+        { "$sort": { "totalQuantity": -1 } }
+    ]
+    summary_cursor = collection.aggregate(pipeline)
+    summary_list = await summary_cursor.to_list(length=None)
+    return [ProductProductionSummary(**item) for item in summary_list]
 
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
 
-    pipeline.append({
-        "$group": {
-            "_id": "$productName",
-            "totalQuantity": {"$sum": "$quantityProduced"},
-            "numRecords": {"$sum": 1}
-        }
-    })
-    pipeline.append({"$sort": {"totalQuantity": -1}}) # Sort by total quantity descending
-
-    result = await collection.aggregate(pipeline).to_list(None)
-    return result
-
-@router.get(
-    "/dashboard/by_operator",
-    response_model=List[OperatorProductionSummary],
-    summary="Get Production Summary by Operator",
-    description="Aggregates production data to provide total quantity and record count for each operator within an optional date range, useful for operator performance dashboards."
-)
-async def get_production_by_operator(
-    db: AsyncIOMotorClient = Depends(get_database),
-    current_user: dict = Depends(get_current_active_user),
-    start_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD). Inclusive."),
-    end_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD). Inclusive.")
+@router.get("/dashboard/operator_summary", response_model=List[OperatorProductionSummary])
+async def get_operator_production_summary(
+    current_user: UserResponse = Depends(get_current_active_user),
+    collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
-    collection = db["production_data"]
-    pipeline = []
-
-    date_match_stage = _get_date_match_stage(start_date, end_date)
-    if date_match_stage:
-        pipeline.append(date_match_stage)
-
-    pipeline.append({
-        "$group": {
-            "_id": "$operatorId",
-            "totalQuantity": {"$sum": "$quantityProduced"},
-            "numRecords": {"$sum": 1}
-        }
-    })
-    pipeline.append({"$sort": {"totalQuantity": -1}}) # Sort by total quantity descending
-
-    result = await collection.aggregate(pipeline).to_list(None)
-    return result
+    """
+    Aggregates production quantity and records per operator.
+    Accessible to all authenticated active users.
+    """
+    pipeline = [
+        {
+            "$group": {
+                "_id": "$operatorId",
+                "totalQuantity": { "$sum": "$quantityProduced" },
+                "numRecords": { "$sum": 1 }
+            }
+        },
+        { "$sort": { "totalQuantity": -1 } }
+    ]
+    summary_cursor = collection.aggregate(pipeline)
+    summary_list = await summary_cursor.to_list(length=None)
+    return [OperatorProductionSummary(**item) for item in summary_list]

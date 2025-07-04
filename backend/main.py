@@ -1,46 +1,61 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware # Import CORS
-from .database import connect_to_mongo, close_mongo_connection
-from .auth.router import router as auth_router
-from .production_data.router import router as production_data_router # Import production data routes
-#hello
-app = FastAPI(
-    title="Production Data Management API",
-    description="API for digitalizing production data entry in factories.",
-    version="1.0.0",
+# backend/main.py
+
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+
+# Import your database connection functions and global collection variables
+from .database import (
+    connect_to_mongo, 
+    close_mongo_connection,
 )
 
-# Configure CORS to allow your frontend to communicate with your backend
-# For development, you might allow all origins. In production, restrict to your frontend's domain.
+# Import routers
+from .auth.router import router as auth_router
+from .routers.notifications import router as notifications_router
+from .routers.reference_data import router as reference_data_router
+
+# UNCOMMENT AND ADD THIS LINE to include production data router!
+from .routers.production_data import router as production_data_router
+
+
+app = FastAPI(
+    title="Manufacturing Operations API", # Updated title
+    description="API for managing manufacturing production data, users, notifications, and reference data.",
+    version="0.1.0",
+)
+
+# CORS configuration
+origins = [
+    "http://localhost",
+    "http://localhost:3000", # Example for a React/Vue/Angular frontend
+    # Add your frontend domain here when deployed
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Event handlers for connecting/disconnecting MongoDB
+# --- Database Connection Events ---
 @app.on_event("startup")
-async def startup_event():
+async def startup_db_client():
     await connect_to_mongo()
-    print("Connected to MongoDB!")
+
 
 @app.on_event("shutdown")
-async def shutdown_event():
+async def shutdown_db_client():
     await close_mongo_connection()
-    print("Disconnected from MongoDB.")
 
-# Include routers for different parts of your API
-app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
-app.include_router(production_data_router, prefix="/api/production-data", tags=["Production Data"])
+# --- Include Routers ---
+app.include_router(auth_router)
+app.include_router(notifications_router)
+app.include_router(reference_data_router)
+app.include_router(production_data_router) # <--- UNCOMMENTED AND ADDED THIS LINE!
 
-@app.get("/", tags=["Root"])
+
+@app.get("/")
 async def read_root():
-    return {"message": "Welcome to the Production Data Management API!"}
-
-# To run this from the 'your_project_name' root directory:
-# uvicorn backend.main:app --reload
-
-# To run this from inside the 'backend' directory:
-# uvicorn main:app --reload
+    return {"message": "Welcome to the Manufacturing Operations API!"} # Updated message
