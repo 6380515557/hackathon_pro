@@ -1,61 +1,56 @@
 # backend/database.py
-
 import os
-import pathlib
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorCollection
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-dotenv_path = pathlib.Path(__file__).parent.absolute() / ".env"
-load_dotenv(dotenv_path=dotenv_path)
+load_dotenv()
 
-MONGO_DETAILS = os.getenv("MONGO_URI")
+# MongoDB connection details
+MONGO_URI = os.getenv("MONGO_URI")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "production_tracker_db") # Default database name
 
-print(f"Attempting to connect to MongoDB with URI: {MONGO_DETAILS}")
-
-# Global variables to hold the MongoDB client, database instance, and collections
-db_client: AsyncIOMotorClient = None
-db: AsyncIOMotorDatabase = None
-production_data_collection: AsyncIOMotorCollection = None
-users_collection: AsyncIOMotorCollection = None
-reference_data_collection: AsyncIOMotorCollection = None
-notifications_collection: AsyncIOMotorCollection = None # <--- ADDED THIS LINE HERE!
+# Global client and database instances
+client: AsyncIOMotorClient = None
+database = None
 
 async def connect_to_mongo():
-    """Establishes connection to MongoDB and initializes collections."""
-    # Ensure notifications_collection is in the global statement
-    global db_client, db, production_data_collection, users_collection, reference_data_collection, notifications_collection
+    """Establishes connection to MongoDB."""
+    global client, database
     try:
-        if not MONGO_DETAILS:
-            raise ValueError("MONGO_URI environment variable is not set or loaded correctly.")
+        print(f"Attempting to connect to MongoDB with URI: {MONGO_URI}")
+        client = AsyncIOMotorClient(MONGO_URI)
+        await client.admin.command('ping') # Test connection
+        database = client[DATABASE_NAME]
+        print("Successfully connected to MongoDB!")
 
-        db_client = AsyncIOMotorClient(MONGO_DETAILS)
-        await db_client.admin.command('ping')
-        print("MongoDB connection successful!")
+        # Optional: Create unique index for username on startup if it doesn't exist
+        # This ensures usernames are unique
+        try:
+            await database["users"].create_index("username", unique=True)
+            print("Ensured unique index on 'users.username'")
+        except Exception as e:
+            print(f"Could not create unique index on users.username (might already exist): {e}")
 
-        db = db_client.get_database("production_db") # Use your desired database name
-
-        # Initialize collections
-        users_collection = db.get_collection("users")
-        production_data_collection = db.get_collection("production_data")
-        reference_data_collection = db.get_collection("reference_data")
-        notifications_collection = db.get_collection("notifications")
-
-        # Optional: Ensure unique index for username when the app starts
-        await users_collection.create_index("username", unique=True)
-        print("MongoDB collections initialized and indexes created.")
-
+    except ServerSelectionTimeoutError as err:
+        print(f"Could not connect to MongoDB: {err}")
+        raise
     except Exception as e:
-        print(f"Could not connect to MongoDB: {e}")
+        print(f"An unexpected error occurred during MongoDB connection: {e}")
         raise
 
 async def close_mongo_connection():
     """Closes the MongoDB connection."""
-    global db_client
-    if db_client:
-        db_client.close()
+    global client
+    if client:
+        client.close()
         print("MongoDB connection closed.")
 
-# The `get_database()` function is no longer needed as collections are imported directly.
-# If you still have dependencies using `get_database`, you need to update them
-# to import the specific collection directly (e.g., `users_collection`).
+def get_database():
+    """Returns the MongoDB database instance."""
+    if database is None:
+        # This case should ideally not happen if connect_to_mongo is called on startup
+        # but provides a fallback or indicates an issue with startup sequence
+        raise Exception("Database not initialized. Call connect_to_mongo() first.")
+    return database
