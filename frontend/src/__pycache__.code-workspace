@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "../../backend/__pycache__"
+		},
+		{
+			"path": "../../backend/auth"
+		},
+		{
+			"path": "../../backend/auth/__pycache__"
+		},
+		{
+			"path": "../../backend/routers"
+		},
+		{
+			"path": "../../backend/services"
+		},
+		{
+			"path": "../../backend/production_data"
+		}
+	],
+	"settings": {}
+}

@@ -8,8 +8,7 @@ from ..schemas import ReferenceDataCategoryCreate, ReferenceDataCategoryResponse
 
 # Import database connection and security dependencies
 from ..database import get_database # CORRECT: Import get_database
-# from ..database import reference_data_collection # REMOVED: Direct collection import
-from ..auth.router import get_current_user, role_required # CORRECT: Import get_current_user and role_required
+from ..dependencies import get_current_user, role_required # This is the correct import path
 
 router = APIRouter(
     prefix="/reference_data",

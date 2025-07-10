@@ -3,34 +3,114 @@
 from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional, Any, Annotated, Dict
 from pydantic import BaseModel, Field, ConfigDict, FieldValidationInfo, field_validator
-from bson import ObjectId
-from pydantic.json_schema import JsonSchemaValue
-from pydantic_core import core_schema
+from bson import ObjectId # Make sure bson is installed: pip install python-bson
+from pydantic_core import core_schema # Import core_schema
+from pydantic.json_schema import JsonSchemaValue # Keep this
 from enum import Enum
 
 
-# --- MongoDB ObjectId Custom Type ---
+# --- MongoDB ObjectId Custom Type (Pydantic V2 Compliant) ---
 class PyObjectId(ObjectId):
+    """
+    Custom type for MongoDB ObjectId to be used with Pydantic v2.
+    Handles serialization and deserialization of ObjectId.
+    """
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(
+        cls, _source: Any, _handler: Any
+    ) -> core_schema.CoreSchema:
+        def validate_from_str(input_value: str) -> ObjectId:
+            """
+            Validator that converts a string to an ObjectId.
+            """
+            if not ObjectId.is_valid(input_value):
+                raise ValueError("Invalid ObjectId string")
+            return ObjectId(input_value)
 
-    @classmethod
-    def validate(cls, v):
-        if not ObjectId.is_valid(v):
-            raise ValueError("Invalid ObjectId")
-        return ObjectId(v)
+        def validate_from_bytes(input_value: bytes) -> ObjectId:
+            """
+            Validator that converts bytes to an ObjectId.
+            """
+            if not ObjectId.is_valid(input_value):
+                raise ValueError("Invalid ObjectId bytes")
+            return ObjectId(input_value)
+        
+        # Define the schema for PyObjectId
+        # It can accept an existing ObjectId instance, or validate from string/bytes
+        return core_schema.union_schema(
+            [
+                core_schema.is_instance_schema(ObjectId), # Allow existing ObjectId instances
+                core_schema.no_info_after_validator_function(
+                    validate_from_str, core_schema.str_schema() # Validate and convert strings
+                ),
+                core_schema.no_info_after_validator_function(
+                    validate_from_bytes, core_schema.bytes_schema() # Validate and convert bytes
+                ),
+            ],
+            # --- MODIFIED LINE BELOW ---
+            # When serializing (e.g., to JSON), convert ObjectId to its string representation
+            serialization=core_schema.plain_serializer_function_ser_schema(lambda x: str(x)),
+            # --- END MODIFIED LINE ---
+        )
 
-    @classmethod
-    def __modify_schema__(cls, field_schema: dict):
-        field_schema.update(type="string")
-
+    # Optional: For better schema generation in OpenAPI docs (FastAPI)
     @classmethod
     def __get_pydantic_json_schema__(
         cls, _core_schema: core_schema.CoreSchema, handler: Any
     ) -> JsonSchemaValue:
+        # This tells FastAPI's OpenAPI generator that PyObjectId should be represented as a string
         return handler(core_schema.str_schema())
 
+    # Ensure Pydantic's model_dump understands how to convert ObjectId to string
+    # for `populate_by_name=True` with alias. This is implicitly handled by __get_pydantic_core_schema__
+    # but good to ensure any direct operations on PyObjectId instances work.
+    def __str__(self):
+        return str(self.binary) # Or just str(self) if you want the hex string
+
+
+# --- Rest of your schemas (keep them as they are) ---
+# (The rest of the file content remains unchanged from your last paste)
+# ... (UserCreate, UserResponse, UserUpdate, UserInDB, Token, TokenData, etc.)
+        def validate_from_bytes(input_value: bytes) -> ObjectId:
+            """
+            Validator that converts bytes to an ObjectId.
+            """
+            if not ObjectId.is_valid(input_value):
+                raise ValueError("Invalid ObjectId bytes")
+            return ObjectId(input_value)
+        
+        # Define the schema for PyObjectId
+        # It can accept an existing ObjectId instance, or validate from string/bytes
+        return core_schema.union_schema(
+            [
+                core_schema.is_instance_schema(ObjectId), # Allow existing ObjectId instances
+                core_schema.no_info_after_validator_function(
+                    validate_from_str, core_schema.str_schema() # Validate and convert strings
+                ),
+                core_schema.no_info_after_validator_function(
+                    validate_from_bytes, core_schema.bytes_schema() # Validate and convert bytes
+                ),
+            ],
+            # When serializing (e.g., to JSON), convert ObjectId to its string representation
+            serialization=core_schema.to_string_serialization_schema(),
+        )
+
+    # Optional: For better schema generation in OpenAPI docs (FastAPI)
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, _core_schema: core_schema.CoreSchema, handler: Any
+    ) -> JsonSchemaValue:
+        # This tells FastAPI's OpenAPI generator that PyObjectId should be represented as a string
+        return handler(core_schema.str_schema())
+
+    # Ensure Pydantic's model_dump understands how to convert ObjectId to string
+    # for `populate_by_name=True` with alias. This is implicitly handled by __get_pydantic_core_schema__
+    # but good to ensure any direct operations on PyObjectId instances work.
+    def __str__(self):
+        return str(self.binary) # Or just str(self) if you want the hex string
+
+
+# --- Rest of your schemas (keep them as they are) ---
 
 # --- User/Auth Schemas ---
 class UserCreate(BaseModel):
@@ -38,17 +118,16 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=6)
     email: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
     full_name: Optional[str] = Field(None, max_length=100)
-    # Define roles here, e.g., ["admin", "operator", "viewer"]
     roles: List[str] = Field(["viewer"], description="List of roles assigned to the user.")
 
 class UserResponse(BaseModel):
-    id: PyObjectId = Field(alias="_id", default=None)
+    id: PyObjectId = Field(alias="_id", default=None) # Using PyObjectId here
     username: str
     email: Optional[str] = None
     full_name: Optional[str] = None
     disabled: Optional[bool] = False
-    is_active: bool = True # Added for consistency with FastAPI security
-    roles: List[str] = Field([], description="List of roles assigned to the user.") # Include roles in response
+    is_active: bool = True
+    roles: List[str] = Field([], description="List of roles assigned to the user.")
 
     model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True, json_schema_extra={
         "example": {
@@ -77,9 +156,31 @@ class UserUpdate(BaseModel):
                 "roles": ["admin", "operator"]
             }
         },
-        extra="forbid" # Disallow extra fields
+        extra="forbid"
     )
 
+class UserInDB(BaseModel):
+    id: PyObjectId = Field(alias="_id", default=None) # Using PyObjectId here
+    username: str
+    email: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+    full_name: Optional[str] = Field(None, max_length=100)
+    hashed_password: str
+    disabled: bool = False
+    is_active: bool = True
+    roles: List[str] = Field([], description="List of roles assigned to the user.")
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, populate_by_name=True, json_schema_extra={
+        "example": {
+            "username": "testuser_db",
+            "email": "testdb@example.com",
+            "full_name": "Test User DB",
+            "hashed_password": "supersecret_hashed_password_string",
+            "disabled": False,
+            "is_active": True,
+            "roles": ["operator", "admin"],
+            "id": "60d0fe4f531123616a100000"
+        }
+    })
 
 class Token(BaseModel):
     access_token: str
@@ -87,53 +188,47 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
-    scopes: List[str] = [] # Include scopes for finer-grained permissions
+    scopes: List[str] = []
 
 
 # --- Notification Schemas ---
-
 class NotificationSeverity(str, Enum):
-    """Defines the severity levels for notifications."""
     INFO = "info"
-    WARNING = "warning" # Changed from "Earning" to be more generic for notifications
-    ERROR = "error"     # Changed from "Withdrawal"
-    CRITICAL = "critical" # Changed from "Recharge"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
     
 class NotificationBase(BaseModel):
-    """Base schema for a notification."""
-    user_id: Optional[str] = None # Can be None for global notifications, or specific user ID (MongoDB ObjectId as string)
-    username: Optional[str] = None # Store username for easier access if user_id is ObjectId
+    user_id: Optional[str] = None
+    username: Optional[str] = None
     message: str
     severity: NotificationSeverity = NotificationSeverity.INFO
     read: bool = False
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 class NotificationCreate(NotificationBase):
-    """Schema for creating a new notification."""
-    # timestamp and read will be defaulted upon creation
+    pass
 
 class NotificationResponse(NotificationBase):
-    """Schema for returning a notification, including its ID."""
-    id: str = Field(alias="_id", description="MongoDB ObjectId as string.") # Map MongoDB's _id to 'id' for API response
+    id: str = Field(alias="_id", description="MongoDB ObjectId as string.")
 
     model_config = ConfigDict(
-        populate_by_name=True, # Allow population by field name or alias
-        arbitrary_types_allowed=True, # Allow ObjectId type from MongoDB
-        json_encoders = {datetime: lambda dt: dt.isoformat()} # For proper datetime serialization
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
     )
 
 
 # --- Production Data Schemas ---
-
 class ProductionDataCreate(BaseModel):
     productName: str
     machineId: str
     quantityProduced: int
     operatorId: str
-    production_date: datetime # Storing as datetime for ISO format in MongoDB
+    production_date: datetime
     shift: Optional[str] = None
     comments: Optional[str] = None
-    timeTakenMinutes: Optional[int] = None # New field for time tracking
+    timeTakenMinutes: Optional[int] = None
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
@@ -141,7 +236,7 @@ class ProductionDataCreate(BaseModel):
             "machineId": "M-001",
             "quantityProduced": 150,
             "operatorId": "OP-789",
-            "production_date": "2024-06-25T10:00:00Z", # Example ISO 8601 UTC
+            "production_date": "2024-06-25T10:00:00Z",
             "shift": "Day",
             "comments": "Smooth run",
             "timeTakenMinutes": 120
@@ -149,7 +244,7 @@ class ProductionDataCreate(BaseModel):
     })
 
 class ProductionDataResponse(ProductionDataCreate):
-    id: PyObjectId = Field(alias="_id")
+    id: PyObjectId = Field(alias="_id") # Using PyObjectId here
 
     model_config = ConfigDict(arbitrary_types_allowed=True, json_encoders={ObjectId: str}, populate_by_name=True)
 
@@ -177,8 +272,8 @@ class ProductionDataFilter(BaseModel):
     shift: Optional[str] = None
     minQuantity: Optional[int] = None
     maxQuantity: Optional[int] = None
-    startDate: Optional[date] = None # Filter by date only
-    endDate: Optional[date] = None   # Filter by date only
+    startDate: Optional[date] = None
+    endDate: Optional[date] = None
 
 # --- Schemas for Reporting & Analytics ---
 
@@ -288,7 +383,7 @@ class ReferenceDataCategoryResponse(ReferenceDataCategoryCreate):
     id: str = Field(alias="_id", description="MongoDB ObjectId as string.")
 
     model_config = ConfigDict(
-        populate_by_name=True, # Allow population by field name or alias
-        arbitrary_types_allowed=True, # Allow ObjectId type from MongoDB
-        json_encoders = {datetime: lambda dt: dt.isoformat()} # For proper datetime serialization
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_encoders = {datetime: lambda dt: dt.isoformat()}
     )

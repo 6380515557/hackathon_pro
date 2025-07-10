@@ -4,15 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
 from typing import List, Optional
-from datetime import datetime, date, timedelta, timezone # Import timezone here
+from datetime import datetime, date, timedelta, timezone
 
-# Import schemas
+# Import schemas (ensure UserInDB is also imported for type hinting)
 from ..schemas import (
     ProductionDataCreate,
     ProductionDataResponse,
     ProductionDataUpdate,
     ProductionDataFilter,
-    UserResponse,
+    UserInDB, # <--- CHANGED FROM UserResponse to UserInDB for consistency
     DailyProductionSummary,
     MonthlyProductionSummary,
     MachinePerformanceSummary,
@@ -21,9 +21,8 @@ from ..schemas import (
     OperatorProductionSummary
 )
 
-# Import database collection and security dependencies
-# CORRECTED IMPORT: Remove get_database and directly import production_data_collection
-from ..database import production_data_collection
+# Import database connection dependency and security dependencies
+from ..database import get_database # <--- CHANGED: Import get_database
 from ..auth.security import get_current_active_user, role_required
 
 router = APIRouter(
@@ -31,18 +30,18 @@ router = APIRouter(
     tags=["Production Data"],
 )
 
-# Dependency to get the production data collection
-async def get_production_data_collection() -> AsyncIOMotorCollection:
+# Dependency to get the production data collection (using get_database)
+async def get_production_data_collection(db=Depends(get_database)) -> AsyncIOMotorCollection:
     """Dependency function to provide the production data collection."""
-    # This now directly returns the imported collection
-    return production_data_collection
+    return db["production_data"] # Get the collection from the database instance
+
 
 # --- CRUD Operations for Production Data ---
 
 @router.post("/", response_model=ProductionDataResponse, status_code=status.HTTP_201_CREATED)
 async def create_production_record(
     record_in: ProductionDataCreate,
-    current_user: UserResponse = Depends(role_required(["admin", "operator"])), # Admins or Operators can create
+    current_user: UserInDB = Depends(role_required(["admin", "operator"])), # Admins or Operators can create
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -60,7 +59,7 @@ async def create_production_record(
 
 @router.get("/", response_model=List[ProductionDataResponse])
 async def get_all_production_records(
-    current_user: UserResponse = Depends(get_current_active_user), # All active users can read
+    current_user: UserInDB = Depends(get_current_active_user), # All active users can read
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
     skip: int = Query(0, description="Number of records to skip for pagination"),
     limit: int = Query(100, description="Maximum number of records to return for pagination"),
@@ -103,7 +102,8 @@ async def get_all_production_records(
             date_query["$gte"] = datetime.combine(startDate, datetime.min.time(), tzinfo=timezone.utc)
         if endDate is not None:
             # For date range, consider the end of the day in UTC
-            date_query["$lte"] = datetime.combine(endDate + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+            # By setting $lt the start of the next day, we include the entire endDate
+            date_query["$lt"] = datetime.combine(endDate + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
         query["production_date"] = date_query
 
     records_cursor = collection.find(query).skip(skip).limit(limit).sort("production_date", -1) # Sort by date descending
@@ -115,7 +115,7 @@ async def get_all_production_records(
 @router.get("/{record_id}", response_model=ProductionDataResponse)
 async def get_production_record_by_id(
     record_id: str,
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -138,7 +138,7 @@ async def get_production_record_by_id(
 async def update_production_record(
     record_id: str,
     record_update: ProductionDataUpdate,
-    current_user: UserResponse = Depends(role_required(["admin", "operator"])), # Admins or Operators can update
+    current_user: UserInDB = Depends(role_required(["admin", "operator"])), # Admins or Operators can update
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -174,7 +174,7 @@ async def update_production_record(
 @router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_production_record(
     record_id: str,
-    current_user: UserResponse = Depends(role_required(["admin"])), # Only Admins can delete
+    current_user: UserInDB = Depends(role_required(["admin"])), # Only Admins can delete
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -197,14 +197,14 @@ async def delete_production_record(
 
 @router.get("/reports/daily_summary", response_model=List[DailyProductionSummary])
 async def get_daily_production_summary(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
     start_date: Optional[date] = Query(None, description="Start date for summary (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="End date for summary (YYYY-MM-DD)"),
 ):
     """
     Generates a daily production summary (total quantity and record count per day).
-    Optionally filter by date range.
+    Occasionally filter by date range.
     Accessible to all authenticated active users.
     """
     pipeline = []
@@ -239,7 +239,7 @@ async def get_daily_production_summary(
 
 @router.get("/reports/monthly_summary", response_model=List[MonthlyProductionSummary])
 async def get_monthly_production_summary(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
     year: Optional[int] = Query(None, description="Filter by year"),
 ):
@@ -278,7 +278,7 @@ async def get_monthly_production_summary(
 
 @router.get("/reports/machine_performance", response_model=List[MachinePerformanceSummary])
 async def get_machine_performance_summary(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection),
     machine_id: Optional[str] = Query(None, description="Filter by a specific machine ID")
 ):
@@ -296,7 +296,7 @@ async def get_machine_performance_summary(
                 "_id": "$machineId",
                 "totalQuantity": { "$sum": "$quantityProduced" },
                 "numRecords": { "$sum": 1 },
-                "avgTimeTakenMinutes": { "$avg": "$timeTakenMinutes" } # Avg of a nullable field is fine
+                "avgTimeTakenMinutes": { "$avg": "$timeTakenMinutes" }
             }
         },
         {
@@ -318,7 +318,7 @@ async def get_machine_performance_summary(
 
 @router.get("/dashboard/overview", response_model=ProductionOverviewSummary)
 async def get_production_overview(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -344,7 +344,7 @@ async def get_production_overview(
 
 @router.get("/dashboard/product_summary", response_model=List[ProductProductionSummary])
 async def get_product_production_summary(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """
@@ -368,7 +368,7 @@ async def get_product_production_summary(
 
 @router.get("/dashboard/operator_summary", response_model=List[OperatorProductionSummary])
 async def get_operator_production_summary(
-    current_user: UserResponse = Depends(get_current_active_user),
+    current_user: UserInDB = Depends(get_current_active_user),
     collection: AsyncIOMotorCollection = Depends(get_production_data_collection)
 ):
     """

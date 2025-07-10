@@ -1,40 +1,39 @@
 # backend/database.py
+
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import ServerSelectionTimeoutError
+from pymongo.errors import ServerSelectionTimeoutError, CollectionInvalid
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# MongoDB connection details
-MONGO_URI = os.getenv("MONGO_URI")
-DATABASE_NAME = os.getenv("DATABASE_NAME", "production_tracker_db") # Default database name
+MONGO_DETAILS = os.getenv("MONGO_DETAILS")
+if not MONGO_DETAILS:
+    raise ValueError("MONGO_DETAILS environment variable not set. Please set it in your .env file.")
 
-# Global client and database instances
-client: AsyncIOMotorClient = None
+# ...
+DATABASE_NAME = os.getenv("DATABASE_NAME", "production_tracker_db") # <--- Make sure this has your actual DB name
+# ...
+# --- END ADDITION ---
+
+client = None
 database = None
 
 async def connect_to_mongo():
     """Establishes connection to MongoDB."""
     global client, database
     try:
-        print(f"Attempting to connect to MongoDB with URI: {MONGO_URI}")
-        client = AsyncIOMotorClient(MONGO_URI)
+        print(f"Attempting to connect to MongoDB with URI: {MONGO_DETAILS}")
+        client = AsyncIOMotorClient(MONGO_DETAILS)
         await client.admin.command('ping') # Test connection
-        database = client[DATABASE_NAME]
+
+        # --- MODIFIED LINE ---
+        database = client[DATABASE_NAME] # Explicitly select the database using the name from .env
+        # --- END MODIFIED LINE ---
+
         print("Successfully connected to MongoDB!")
-
-        # Optional: Create unique index for username on startup if it doesn't exist
-        # This ensures usernames are unique
-        try:
-            await database["users"].create_index("username", unique=True)
-            print("Ensured unique index on 'users.username'")
-        except Exception as e:
-            print(f"Could not create unique index on users.username (might already exist): {e}")
-
     except ServerSelectionTimeoutError as err:
-        print(f"Could not connect to MongoDB: {err}")
+        print(f"Could not connect to MongoDB (Server Selection Timeout): {err}")
         raise
     except Exception as e:
         print(f"An unexpected error occurred during MongoDB connection: {e}")
@@ -49,8 +48,21 @@ async def close_mongo_connection():
 
 def get_database():
     """Returns the MongoDB database instance."""
+    global database
     if database is None:
-        # This case should ideally not happen if connect_to_mongo is called on startup
-        # but provides a fallback or indicates an issue with startup sequence
         raise Exception("Database not initialized. Call connect_to_mongo() first.")
     return database
+
+async def ensure_unique_indexes():
+    """
+    Ensures that necessary unique indexes are created in MongoDB.
+    Currently, creates a unique index on 'username' in the 'users' collection.
+    """
+    db = get_database()
+    try:
+        await db["users"].create_index("username", unique=True)
+        print("Ensured unique index on 'users.username'")
+    except CollectionInvalid as e:
+        print(f"Error ensuring unique index (CollectionInvalid): {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred while ensuring indexes: {e}")
